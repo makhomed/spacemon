@@ -48,6 +48,8 @@ class Config:
                 self.default_warning = int(value.strip().rstrip('%'))
                 if self.default_warning < 20:
                     sys.exit(f"bad config, 'warning' must be >= 20%, '{self.default_warning}%' given")
+                if self.default_warning > 90:
+                    sys.exit(f"bad config, 'warning' must be <= 90%, '{self.default_warning}%' given")
             elif name == "host":
                 if " " in value:
                     host, description = value.split(None, 1)
