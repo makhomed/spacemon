@@ -5,7 +5,12 @@ spacemon
 Free space monitoring tool
 
 This tool will monitor free space on multiple servers
-and print alerts to stdout if detects any anomalies.
+via ssh and print alerts to stdout if detects any anomalies.
+
+Known limitations
+-----------------
+
+ZFS pool must be named ``tank``. This name is hardcoded into script, sorry.
 
 Installation
 ------------
@@ -24,12 +29,14 @@ Configuration
 -------------
 
 - ``vim /opt/spacemon/spacemon.conf``
-- write to config something like this:
+- write to configuration file something like this:
 
 .. code-block:: none
 
-    warning 80% 
-    host example.com one-line description of this host
+    warning 75% 
+    host example.com [one-line description of this host]
+    host example.net [one-line description of this host]
+    host example.org [one-line description of this host]
 
 Configuration file allow comments, from symbol ``#`` to end of line.
 
@@ -42,7 +49,7 @@ Configuration file has only two directives:
 
 ``warning`` directive has syntax ``warning <number>%``. Default value of ``warning``
 directive is ``80%``. It can be redefined to any other value, in bounds from 20% to 90%.
-Value of ``wanging`` directive will be used for all below host declarations.
+Value of ``warning`` directive will be used for all below host declarations.
 For example:
 
 .. code-block:: none
@@ -66,7 +73,7 @@ Command line arguments
     spacemon [-c /path/to/configuration/file.conf]
 
 ``spacemon`` has optional command line argument ``-c </path/to/configuration/file.conf>``.
-If argument ``-c`` not defined - by default will be used configurafion file ``/opt/spacemon/spacemon.conf``.
+If argument ``-c`` not defined - by default will be used configuration file ``/opt/spacemon/spacemon.conf``.
 
 Before first run
 ----------------
@@ -91,18 +98,18 @@ with monitored server with command ``ssh example.com`` and answer ``yes`` to ssh
     Are you sure you want to continue connecting (yes/no)? yes
 
 
-Send alerts only to email
--------------------------
-
-.. code-block:: none
-
-    0 * * * * root /opt/spacemon/spacemon
-
-
 Send alerts to email and telegram
 ---------------------------------
 
 .. code-block:: none
 
     0 * * * * root /opt/spacemon/spacemon > /tmp/spacemon.txt ; if [ -s /tmp/spacemon.txt ] ; then /usr/local/bin/telegram-send --pre --stdin < /tmp/spacemon.txt ; cat /tmp/spacemon.txt ; fi ; rm /tmp/spacemon.txt
+
+
+Send alerts only to email
+-------------------------
+
+.. code-block:: none
+
+    0 * * * * root /opt/spacemon/spacemon
 
