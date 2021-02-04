@@ -1,0 +1,191 @@
+#!/usr/bin/python3
+
+import argparse
+import os
+import os.path
+import sys
+import signal
+import subprocess
+import math
+
+
+__author__ = "Gena Makhomed"
+__contact__ = "https://github.com/makhomed/spacemon"
+__license__ = "GPLv3"
+__version__ = "1.0.0"
+__date__ = "2021-02-04"
+
+
+class Config:
+    def __init__(self, configuration_file_name):
+        self.configuration_file_name = configuration_file_name
+        self.default_warning = 80
+        self.hosts = set()
+        self.port = dict()
+        self.warning = dict()
+        self.description = dict()
+        self.read_configuration_file()
+
+    def read_configuration_file(self):
+        if not os.path.isfile(self.configuration_file_name):
+            sys.exit("configuration file '%s' not found" % self.configuration_file_name)
+        with open(self.configuration_file_name) as configuration_file:
+            lines = configuration_file.read().strip().split('\n')
+        for line in lines:
+            comment_start = line.find('#')
+            if comment_start > -1:
+                line = line[:comment_start]
+            line = line.strip()
+            if not line:
+                continue
+            line = line.replace("\t", "\x20")
+            if " " in line:
+                name, value = line.split(None, 1)
+            else:
+                name = line
+                value = None
+            if name == "warning":
+                self.default_warning = int(value.strip().rstrip('%'))
+                if self.default_warning < 20:
+                    sys.exit(f"bad config, 'warning' must be >= 20%, '{self.default_warning}%' given")
+            elif name == "host":
+                if " " in value:
+                    host, description = value.split(None, 1)
+                else:
+                    host = value
+                    description = None
+                if host in self.hosts:
+                    sys.exit("bad config, host '%s' already defined" % host)
+                if ':' in host:
+                    host, port = host.split(':')
+                    port = int(port)
+                else:
+                    port = 22
+                self.hosts.add(host)
+                self.port[host] = port
+                self.description[host] = description
+                self.warning[host] = self.default_warning
+            else:
+                sys.exit(f"invalid config directive '{name}'")
+        if not self.hosts:
+            sys.exit("bad config, at least one 'host' directive must be defined")
+
+
+class Result:
+    def __init__(self, returncode, stdout_bytes, stderr_bytes, args):
+        self.returncode = returncode
+        self.stdout_bytes = stdout_bytes
+        self.stderr_bytes = stderr_bytes
+        self.args = args
+        self.stdout_raw = stdout_bytes.decode(encoding="utf-8", errors="replace")
+        self.stderr_raw = stderr_bytes.decode(encoding="utf-8", errors="replace")
+        self.stdout = self.stdout_raw.strip()
+        self.stderr = self.stderr_raw.strip()
+
+    def __bool__(self):
+        return self.returncode == 0
+
+    def print_info(self, message="ERROR"):
+        print(message + ": Process(", self.args, ") failed")
+        print("returncode:", self.returncode)
+        print("stdout:", self.stdout)
+        print("stderr:", self.stderr)
+
+
+PROCESS_COMMAND_TIMEOUT = 10
+
+def Process(args):
+    p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, close_fds=True, cwd='/')
+    try:
+        stdout_bytes, stderr_bytes = p.communicate(None, PROCESS_COMMAND_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        stdout_bytes, stderr_bytes = p.communicate()
+    result = Result(p.returncode, stdout_bytes, stderr_bytes, args)
+    return result
+
+
+class SpaceMon:
+    def __init__(self, args):
+        self.config = Config(args.config)
+
+    def run(self):
+        for host in self.config.hosts:
+            self.check_space(host)
+
+    def check_space(self, host):
+        self.check_df_space(host)
+        self.check_zfs_space(host)
+
+    def check_df_space(self, host):
+        """
+        # df -h --exclude-type=zfs
+        Filesystem               Size  Used Avail Use% Mounted on
+        devtmpfs                  63G     0   63G   0% /dev
+        tmpfs                     63G     0   63G   0% /dev/shm
+        tmpfs                     63G  986M   62G   2% /run
+        tmpfs                     63G     0   63G   0% /sys/fs/cgroup
+        /dev/mapper/centos-root  8.0G  1.7G  6.4G  22% /
+        /dev/md0                1014M  220M  795M  22% /boot
+        /dev/mapper/centos-opt   8.0G   91M  8.0G   2% /opt
+        /dev/mapper/centos-var   8.0G  546M  7.5G   7% /var
+        /dev/mapper/centos-tmp   8.0G   90M  8.0G   2% /tmp
+        tmpfs                     13G     0   13G   0% /run/user/0
+        """
+        args = 'ssh', '-p', str(self.config.port[host]), host, 'df', '-h', '--exclude-type=zfs'
+        result = Process(args)
+        low_free_space = list()
+        if result:
+            lines = result.stdout.strip().split('\n')
+            headers = lines.pop(0)
+            for line in lines:
+                used_percent = int(line.split()[4].rstrip('%'))
+                if used_percent >= self.config.warning[host]:
+                    low_free_space.append(line)
+            if low_free_space:
+                low_free_space.insert(0, headers)
+                line = f"LOW FREE SPACE ON HOST {self.config.description[host]} ({host})"
+                print("\n\n"+line)
+                print("=" * len(line))
+                print('\n'.join(low_free_space))
+        else:
+            result.print_info()
+
+
+    def check_zfs_space(self, host):
+        """
+        # zfs list tank
+        NAME   USED  AVAIL     REFER  MOUNTPOINT
+        tank   574G  1.09T       96K  /tank
+        """
+        args = 'ssh', '-p', str(self.config.port[host]), host, 'if [ -x /usr/sbin/zfs ] ; then zfs list tank -o used,avail -H -p ; fi'
+        result = Process(args)
+        if result:
+            if result.stdout.strip():
+                used, avail = result.stdout.strip().split()
+                used = int(used)
+                avail = int(avail)
+                used_percent = math.ceil(used/(used+avail)*100)
+                if used_percent >= self.config.warning[host]:
+                    line = f"LOW ZFS FREE SPACE ON HOST {self.config.description[host]} ({host})"
+                    print("\n\n"+line)
+                    print("=" * len(line))
+                    args = 'ssh', '-p', str(self.config.port[host]), host, 'if [ -x /usr/sbin/zfs ] ; then zfs list tank ; fi'
+                    result = Process(args)
+                    if result:
+                        print(result.stdout)
+                    else:
+                        result.print_info()
+        else:
+            result.print_info()
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="spacemon")
+    parser.add_argument("-c", required=False, metavar="CONFIG", dest="config", default="/opt/spacemon/spacemon.conf", help="configuration file")
+    args = parser.parse_args()
+    SpaceMon(args).run()
+
+
+if __name__ == "__main__":
+    main()
